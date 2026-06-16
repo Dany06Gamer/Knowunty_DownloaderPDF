@@ -1,79 +1,47 @@
 import os
-import asyncio
+import re
 import requests
 import io
 from flask import Flask, request, render_template_string, send_file
 import flet as ft
-from playwright.async_api import async_playwright
 
 app = Flask(__name__)
 
-SESSION_DIR = "sessione_knowunity"
-if not os.path.exists(SESSION_DIR):
-    os.makedirs(SESSION_DIR)
-
-# --- LOGICA DI DOWNLOAD AUTOMATICA ---
-async def fetch_pdf_link(url, headless=True):
-    pdf_found_url = [None]
-    async with async_playwright() as p:
-        # Avviamo il browser simulando un utente reale
-        browser = await p.chromium.launch(headless=headless, args=["--disable-blink-features=AutomationControlled"])
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            viewport={"width": 1920, "height": 1080}
-        )
-        page = await context.new_page()
-
-        # Intercettiamo i file di rete alla ricerca del PDF originale
-        async def catch_pdf(response):
-            if ".pdf" in response.url.lower() and "knowunity" in response.url:
-                pdf_found_url[0] = response.url
-
-        page.on("response", catch_pdf)
-        
-        try:
-            # Sostituiamo i link della versione mobile/app con quella web standard se necessario
-            if "knowunity.page.link" in url or "link.knowunity.com" in url:
-                # Se i tuoi amici incollano i link presi dall'app dello smartphone, attendiamo il redirect
-                await page.goto(url, wait_until="DOMContentLoaded", timeout=60000)
-                url = page.url
-
-            await page.goto(url, wait_until="networkidle", timeout=60000)
+# --- LOGICA DI ESTRAZIONE DIRETTA TRAMITE API ---
+def get_knowunity_pdf(url):
+    try:
+        # 1. Estraiamo l'UUID dell'appunto dal link inserito
+        # Funziona con formati tipo: knowunity.it/knows/lettere-numeri-uuid
+        match = re.search(search=r'knows/([a-f0-9\-]{36})', string=url)
+        if not match:
+            # Prova a cercare un ID generico se il link è diverso
+            match = re.search(search=r'knows/([a-zA-Z0-9\-]+)', string=url)
             
-            # --- SIMULAZIONE CLICK AUTOMATICO ---
-            # Questo blocco cerca i bottoni tipici di KnowUnity per espandere il documento a schermo intero
-            # e forzare il caricamento del PDF reale in background.
-            selectors = [
-                "button:has-text('Espandi')", 
-                "button:has-text('Schermo intero')", 
-                ".fullscreen-button", 
-                "div[role='button'] >> has-text('Leggi')"
-            ]
+        if death_note_id := match.group(1) if match else None:
+            # 2. Interroghiamo l'API pubblica di KnowUnity per avere i dettagli dell'appunto
+            api_url = f"https://api.knowunity.com/v1/knows/{death_note_id}"
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                "Accept": "application/json"
+            }
             
-            for selector in selectors:
-                try:
-                    if await page.is_visible(selector, timeout=3000):
-                        await page.click(selector)
-                        await asyncio.sleep(2) # Aspetta che si carichi la visualizzazione
-                        break
-                except:
-                    continue
-
-            # Aspettiamo qualche secondo extra per dare tempo al PDF di apparire nella rete
-            for _ in range(10): 
-                if pdf_found_url[0]: 
-                    break
-                await asyncio.sleep(1)
+            response = requests.get(url=api_url, headers=headers, timeout=15)
+            if response.status_code == 200:
+                data = response.json()
                 
-        except Exception as e:
-            print(f"Errore durante la navigazione: {e}")
-            return None
-        finally:
-            await browser.close()
-            
-    return pdf_found_url[0]
+                # 3. Estraiamo il link diretto al file PDF nei server Cloud di KnowUnity
+                # Di solito si trova sotto 'documents' o 'fileUrl'
+                pdf_url = data.get("fileUrl") or data.get("documentUrl")
+                if not pdf_url and "documents" in data and len(data["documents"]) > 0:
+                    pdf_url = data["documents"][0].get("fileUrl")
+                
+                if pdf_url:
+                    return pdf_url
+    except Exception as e:
+        print(f"Errore API: {e}")
+    return None
 
-# --- INTERFACCIA WEB SEMPLICE PER I TUOI AMICI ---
+# --- INTERFACCIA WEB PER I TUOI AMICI ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="it">
@@ -97,12 +65,12 @@ HTML_TEMPLATE = """
     <div class="container">
         <h1>KnowUnity Downloader 🚀</h1>
         <p>Incolla il link dell'appunto qui sotto e scarica il PDF all'istante.</p>
-        <form action="/download" method="post" onsubmit="document.querySelector('button').innerText='ELABORAZIONE IN CORSO...';">
-            <input type="text" name="url" placeholder="https://knowunity.it/..." required>
+        <form action="/download" method="post" onsubmit="document.querySelector('button').innerText='SCARICAMENTO IN CORSO...';">
+            <input type="text" name="url" placeholder="https://knowunity.it/knows/..." required>
             <button type="submit">SCARICA PDF</button>
         </form>
     </div>
-    <div class="footer">Creato con 🧠 per gli amici</div>
+    <div class="footer">Creato per gli amici</div>
 </body>
 </html>
 """
@@ -114,13 +82,29 @@ def index():
 @app.route('/download', methods=['POST'])
 def download_route():
     url = request.form.get('url')
-    pdf_url = asyncio.run(fetch_pdf_link(url, headless=True))
-    if pdf_url:
-        resp = requests.get(pdf_url)
-        return send_file(io.BytesIO(resp.content), mimetype='application/pdf', as_attachment=True, download_name="appunto_knowunity.pdf")
-    return "<h3>Errore: Impossibile recuperare il PDF automaticamente. Assicurati che il link sia corretto o riprova tra pochi secondi.</h3><br><a href='/'>Torna indietro</a>"
+    
+    # Se inseriscono un link abbreviato da mobile, ricaviamo quello reale
+    if "page.link" in url or "link.knowunity" in url:
+        try:
+            r = requests.head(url=url, allow_redirects=True, timeout=10)
+            url = r.url
+        except:
+            pass
 
-# --- SEZIONE DESKTOP (FLET) ---
+    pdf_url = get_knowunity_pdf(url=url)
+    
+    if pdf_url:
+        resp = requests.get(url=pdf_url, timeout=20)
+        return send_file(
+            io.BytesIO(initial_bytes=resp.content), 
+            mimetype='application/pdf', 
+            as_attachment=True, 
+            download_name="appunto_knowunity.pdf"
+        )
+    
+    return "<h3>Errore: Impossibile decodificare questo appunto. Assicurati che il link contenga la dicitura '/knows/' ed sia un appunto valido.</h3><br><a href='/'>Torna indietro</a>"
+
+# --- SEZIONE DESKTOP (MANTENUTA PER COMPATIBILITÀ) ---
 async def main_desktop(page: ft.Page):
     page.title = "KnowUnity Downloader"
 
