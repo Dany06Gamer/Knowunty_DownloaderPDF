@@ -18,7 +18,6 @@ if not os.path.exists(SESSION_DIR):
 async def fetch_pdf_link(url, headless=True):
     pdf_found_url = [None]
     async with async_playwright() as p:
-        # Su Render usiamo headless=True
         browser = await p.chromium.launch(headless=headless)
         context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36")
         page = await context.new_page()
@@ -31,7 +30,7 @@ async def fetch_pdf_link(url, headless=True):
         
         try:
             await page.goto(url, wait_until="networkidle", timeout=60000)
-            for _ in range(15): # Un po' di attesa extra per i server lenti
+            for _ in range(15): 
                 if pdf_found_url[0]: break
                 await asyncio.sleep(1)
         except Exception:
@@ -50,8 +49,9 @@ HTML_TEMPLATE = """
     <style>
         body { font-family: sans-serif; background: #121212; color: white; text-align: center; padding: 50px; }
         .container { max-width: 500px; margin: auto; background: #1e1e1e; padding: 30px; border-radius: 15px; }
-        input { width: 80%; padding: 10px; margin: 20px 0; border-radius: 5px; }
-        button { padding: 10px 20px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; }
+        input { width: 80%; padding: 10px; margin: 20px 0; border-radius: 5px; border: 1px solid #333; background: #2a2a2a; color: white; }
+        button { padding: 10px 20px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; }
+        button:hover { background: #0056b3; }
     </style>
 </head>
 <body>
@@ -77,19 +77,20 @@ def download_route():
     if pdf_url:
         resp = requests.get(pdf_url)
         return send_file(io.BytesIO(resp.content), mimetype='application/pdf', as_attachment=True, download_name="appunto.pdf")
-    return "Errore: PDF non trovato."
+    return "Errore: PDF non trovato o link non valido."
 
 # --- SEZIONE DESKTOP (FLET) ---
 async def main_desktop(page: ft.Page):
-    # (Codice Flet omesso per brevità, ma presente nel file locale)
     page.title = "KnowUnity Downloader"
-    # ... resto del codice Flet del passaggio precedente ...
+    # ... Qui Flet gestirà la tua interfaccia locale quando sei sul PC ...
 
-if __name__ == "__main__":
-    # Se la variabile d'ambiente PORT esiste, siamo su Render
-    if "PORT" in os.environ:
-        port = int(os.environ.get("PORT", 5000))
-        app.run(host='0.0.0.0', port=port)
-    else:
-        # Altrimenti, avvia la versione Desktop sul tuo PC
+# --- AVVIO DINAMICO (OTTIMIZZATO PER RENDER) ---
+# Se "PORT" è presente nell'ambiente, eseguiamo DIRETTAMENTE Flask ignorando Flet
+if "PORT" in os.environ:
+    port = int(os.environ.get("PORT", 5000))
+    # Questo avvia Flask forzatamente per Render
+    app.run(host='0.0.0.0', port=port)
+else:
+    # Se sei sul tuo PC locale (senza variabile PORT), si avvia normalmente in modalità Desktop (Flet)
+    if __name__ == "__main__":
         ft.app(target=main_desktop)
