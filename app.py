@@ -7,18 +7,35 @@ import flet as ft
 
 app = Flask(__name__)
 
-# --- LOGICA DI ESTRAZIONE DIRETTA TRAMITE API ---
+# --- LOGICA DI ESTRAZIONE POTENZIATA ---
 def get_knowunity_pdf(url):
     try:
-        # 1. Estraiamo l'UUID dell'appunto dal link inserito
-        # Funziona con formati tipo: knowunity.it/knows/lettere-numeri-uuid
-        match = re.search(search=r'knows/([a-f0-9\-]{36})', string=url)
+        # Puliamo il link da eventuali spazi bianchi
+        url = url.strip()
+        
+        # 1. Se è un link abbreviato, proviamo a espanderlo subito con un finto browser mobile
+        if "page.link" in url or "link.knowunity" in url or "knowunity.com/v2/landing" in url:
+            headers = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"}
+            r = requests.get(url=url, headers=headers, allow_redirects=True, timeout=10)
+            url = r.url
+
+        # 2. Cerchiamo l'ID dell'appunto (stringa alfanumerica di 36 caratteri con i trattini)
+        # Questo trucco trova l'ID ovunque sia posizionato nel link!
+        match = re.search(search=r'([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})', string=url, flags=re.IGNORECASE)
+        
+        # Se non trova l'UUID standard, prova a prendere l'ultima parte del link dopo l'ultimo slash
         if not match:
-            # Prova a cercare un ID generico se il link è diverso
-            match = re.search(search=r'knows/([a-zA-Z0-9\-]+)', string=url)
+            # Es: se il link è knowunity.it/knows/qualcosa, prende 'qualcosa'
+            if "knows/" in url:
+                part = url.split("knows/")[-1]
+                death_note_id = part.split("?")[0] # Rimuove eventuali parametri extra
+            else:
+                death_note_id = url.split("/")[-1].split("?")[0]
+        else:
+            death_note_id = match.group(1)
             
-        if death_note_id := match.group(1) if match else None:
-            # 2. Interroghiamo l'API pubblica di KnowUnity per avere i dettagli dell'appunto
+        if death_note_id:
+            # 3. Chiamata all'API globale di KnowUnity
             api_url = f"https://api.knowunity.com/v1/knows/{death_note_id}"
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
@@ -29,8 +46,7 @@ def get_knowunity_pdf(url):
             if response.status_code == 200:
                 data = response.json()
                 
-                # 3. Estraiamo il link diretto al file PDF nei server Cloud di KnowUnity
-                # Di solito si trova sotto 'documents' o 'fileUrl'
+                # Estraiamo il percorso del PDF
                 pdf_url = data.get("fileUrl") or data.get("documentUrl")
                 if not pdf_url and "documents" in data and len(data["documents"]) > 0:
                     pdf_url = data["documents"][0].get("fileUrl")
@@ -41,7 +57,7 @@ def get_knowunity_pdf(url):
         print(f"Errore API: {e}")
     return None
 
-# --- INTERFACCIA WEB PER I TUOI AMICI ---
+# --- INTERFACCIA WEB ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="it">
@@ -64,9 +80,9 @@ HTML_TEMPLATE = """
 <body>
     <div class="container">
         <h1>KnowUnity Downloader 🚀</h1>
-        <p>Incolla il link dell'appunto qui sotto e scarica il PDF all'istante.</p>
+        <p>Incolla qualsiasi link di KnowUnity (PC o Smartphone) per scaricare il PDF.</p>
         <form action="/download" method="post" onsubmit="document.querySelector('button').innerText='SCARICAMENTO IN CORSO...';">
-            <input type="text" name="url" placeholder="https://knowunity.it/knows/..." required>
+            <input type="text" name="url" placeholder="Incolla il link qui..." required>
             <button type="submit">SCARICA PDF</button>
         </form>
     </div>
@@ -82,15 +98,6 @@ def index():
 @app.route('/download', methods=['POST'])
 def download_route():
     url = request.form.get('url')
-    
-    # Se inseriscono un link abbreviato da mobile, ricaviamo quello reale
-    if "page.link" in url or "link.knowunity" in url:
-        try:
-            r = requests.head(url=url, allow_redirects=True, timeout=10)
-            url = r.url
-        except:
-            pass
-
     pdf_url = get_knowunity_pdf(url=url)
     
     if pdf_url:
@@ -102,9 +109,9 @@ def download_route():
             download_name="appunto_knowunity.pdf"
         )
     
-    return "<h3>Errore: Impossibile decodificare questo appunto. Assicurati che il link contenga la dicitura '/knows/' ed sia un appunto valido.</h3><br><a href='/'>Torna indietro</a>"
+    return "<h3>Errore: Impossibile trovare il documento. Verifica che il link porti a un appunto visibile e riprova.</h3><br><a href='/'>Torna indietro</a>"
 
-# --- SEZIONE DESKTOP (MANTENUTA PER COMPATIBILITÀ) ---
+# --- SEZIONE DESKTOP ---
 async def main_desktop(page: ft.Page):
     page.title = "KnowUnity Downloader"
 
